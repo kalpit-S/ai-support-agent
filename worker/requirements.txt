@@ -1,0 +1,25 @@
+# worker/requirements.txt
+# Python dependencies for the worker service.
+
+# ============================================================
+# DATABASE
+# ============================================================
+sqlalchemy>=2.0.0         # ORM for Postgres
+psycopg2-binary>=2.9.0    # PostgreSQL driver
+
+# ============================================================
+# REDIS
+# ============================================================
+redis>=4.0.0              # Redis client for batch polling
+
+# ============================================================
+# LLM
+# ============================================================
+requests>=2.28.0          # HTTP client for OpenRouter API
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+pydantic>=2.0.0           # Data validation
+pydantic-settings>=2.0.0  # Load settings from env vars
+python-dotenv>=1.0.0      # Load .env files (local dev)

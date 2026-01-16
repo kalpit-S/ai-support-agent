@@ -1,0 +1,162 @@
+# docker-compose.yml
+# AI Support Agent - Multi-channel customer support with LLM
+# Run with: docker-compose up
+# Stop with: docker-compose down
+# Reset everything: docker-compose down -v (the -v removes data volumes too)
+
+services:
+  # ============================================================
+  # POSTGRES - our main database
+  # ============================================================
+  # PostgreSQL stores all our persistent data: customers, messages, knowledge base, etc.
+  # The "volumes" section makes data persist even when container restarts.
+  # The "init.sql" file runs automatically on first startup to create tables.
+  db:
+    image: postgres:15  # Official Postgres image, version 15
+    container_name: support_db
+    environment:
+      # These env vars configure the database on first run
+      POSTGRES_USER: support
+      POSTGRES_PASSWORD: support_dev  # In production, use secrets!
+      POSTGRES_DB: support_db
+    ports:
+      # Maps container's port 5432 to host's port 5432
+      # So you can connect with: psql -h localhost -U support -d support_db
+      - "5432:5432"
+    volumes:
+      # Persist data between container restarts
+      - postgres_data:/var/lib/postgresql/data
+      # Run init.sql on first startup (Postgres looks in /docker-entrypoint-initdb.d/)
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+      # Run seed.sql after init.sql (files run in alphabetical order)
+      - ./db/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql
+    healthcheck:
+      # Docker uses this to know when Postgres is ready
+      test: ["CMD-SHELL", "pg_isready -U support -d support_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================
+  # REDIS - for message batching
+  # ============================================================
+  # Redis is an in-memory data store. We use it to:
+  # 1. Buffer incoming messages (the 5-second batching window)
+  # 2. Queue batches for the worker to process
+  # Fast, simple, perfect for this use case.
+  redis:
+    image: redis:7-alpine  # Alpine = smaller image size
+    container_name: support_redis
+    ports:
+      # Maps container's port 6379 to host's port 6379
+      # So you can connect with: redis-cli
+      - "6379:6379"
+    volumes:
+      # Persist Redis data (optional for dev, but nice to have)
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================
+  # API - FastAPI application
+  # ============================================================
+  # The API receives webhook calls, stores messages, and triggers batching.
+  # Build from the Dockerfile in ./api directory.
+  api:
+    build:
+      context: .  # Root directory as build context
+      dockerfile: api/Dockerfile
+    container_name: support_api
+    ports:
+      # Maps container's port 8000 to host's port 8000
+      # Access at: http://localhost:8000
+      # API docs at: http://localhost:8000/docs
+      - "8000:8000"
+    env_file:
+      - .env  # Load API keys from .env file
+    environment:
+      # These override the defaults in config.py
+      # Use service names (db, redis) as hostnames - Docker networking magic
+      DATABASE_URL: postgresql://support:support_dev@db:5432/support_db
+      REDIS_URL: redis://redis:6379/0
+      # Voice API keys (from .env file)
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    depends_on:
+      # Wait for db and redis to be healthy before starting
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      # Mount code directories for live reloading during development
+      - ./api:/app
+      - ./shared:/app/shared  # Shared models module
+    healthcheck:
+      # Use Python to check health (curl not in slim image)
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================
+  # WORKER - Background batch processor
+  # ============================================================
+  # The worker polls Redis for ready batches and processes them.
+  # It loads messages from Postgres, calls the LLM, and saves responses.
+  worker:
+    build:
+      context: .  # Root directory as build context
+      dockerfile: worker/Dockerfile
+    container_name: support_worker
+    env_file:
+      - .env  # Load environment variables from .env file
+    environment:
+      DATABASE_URL: postgresql://support:support_dev@db:5432/support_db
+      REDIS_URL: redis://redis:6379/0
+      BATCH_WINDOW_SECONDS: "5"
+      POLL_INTERVAL_SECONDS: "1"
+      # LLM settings - reads from .env file in project root
+      # The ${VAR} syntax tells Docker Compose to use the host's env var
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-anthropic/claude-sonnet-4.5}
+    depends_on:
+      # Wait for db, redis, and api to be healthy
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    volumes:
+      # Mount code directories for live reloading
+      - ./worker:/app
+      - ./shared:/app/shared  # Shared models module
+    # No ports - worker doesn't serve HTTP, it just processes batches
+
+  # ============================================================
+  # FRONTEND - React UI served by nginx
+  # ============================================================
+  # The frontend is a React app that proxies API requests to the backend.
+  # In production, nginx serves the static files and proxies /webhook, /customers, etc.
+  frontend:
+    build: ./frontend
+    container_name: support_frontend
+    ports:
+      # Main entry point - access the app at http://localhost:3000
+      - "3000:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    # No volumes - frontend is static files, no live reload needed in production
+
+# ============================================================
+# VOLUMES - named storage that persists between restarts
+# ============================================================
+# Without these, all data would be lost when containers stop.
+volumes:
+  postgres_data:
+  redis_data:

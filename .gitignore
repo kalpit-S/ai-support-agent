@@ -1,0 +1,24 @@
+CLAUDE.md
+
+# Environment variables (contains secrets!)
+.env
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# Claude Code local settings
+.claude/
+
+# Playwright MCP screenshots
+.playwright-mcp/
+test_audio.m4a
+test_audio.raw
